@@ -1,0 +1,380 @@
+---
+title: "Traffic Data"
+author: "Jun Ming Li"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This was a small look into some of the traffic data that is collecting by monitoring devices set up by the state of GA. This project was an extremely small scale project to showcase the skills and power of analytics into subjects outside of what people typically imagine when they thing of the word "analytics". 
+
+
+
+## Libraries used
+
+```{r include=FALSE}
+
+library(car)
+library(leaps)
+library(olsrr)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(naniar)
+library(forecast)
+library(ggcorrplot)
+
+```
+
+
+# Data Pre-processing
+
+
+The data came from [Georgia Department of Transportation](https://www.dot.ga.gov/GDOT/Pages/RoadTrafficData.aspx)
+
+```{r}
+
+
+# load and preview data
+traffic_data <- read.csv('Combined Data.csv')
+str(traffic_data)
+
+# Subset data for 2019 onward. 
+traffic_data <- subset(traffic_data, Year >= 2019)
+
+# check for NA values
+sapply(traffic_data, function(x) which(is.na(x)))
+traffic_data[21,]
+# Single and Combo peak, index 21 has NAs. 
+
+
+# Replace NAs with mean value of each road type over the years
+
+# Find the mean of each road
+traffic_data %>% group_by(Road) %>% summarize( Single_Mean = mean(Single.Unit...Peak, na.rm=TRUE) ,Combo_Mean = mean(Combo.Unit...Peak, na.rm=TRUE))
+# Single: 0.192	
+# Combo: 0.119	
+
+
+# Find index of Nas
+Single_NAs <- which(is.na(traffic_data$Single.Unit...Peak[]))
+Combo_NAs <- which(is.na(traffic_data$Combo.Unit...Peak[]))
+
+
+# Replace Nas with mean value
+traffic_data$Single.Unit...Peak[Single_NAs] <- 0.192	
+traffic_data$Combo.Unit...Peak[Combo_NAs]   <- 0.119
+
+
+# Check replacement 
+traffic_data[21,]  # Success.
+
+
+```
+
+
+
+
+
+
+## Check reference levels and fix indexes
+
+```{r}
+
+# check variable types
+str(traffic_data)
+# remove the road name, not useful
+# change land.use into categorical 
+# change number of lanes into categorical
+
+
+# convert values to factor
+traffic_data$Number.of.Lanes <- as.factor(traffic_data$Number.of.Lanes)
+traffic_data$Land.use        <- as.factor(traffic_data$Land.use)
+
+
+# check levels and reference level
+levels(traffic_data$Number.of.Lanes) 
+levels(traffic_data$Land.use)
+
+table(traffic_data$Number.of.Lanes) #reference level is '2'
+table(traffic_data$Land.use)        #reference level is 'commercial'
+
+
+# Changing the categories to 1 and 2
+traffic_data$Number.of.Lanes <- ifelse(traffic_data$Number.of.Lanes == 2, '1','2')
+traffic_data$Land.use <- ifelse(traffic_data$Land.use == 'Commerical', '1','2')
+
+
+# convert values to factor in case this changed them to be numerical or int
+traffic_data$Number.of.Lanes <- as.factor(traffic_data$Number.of.Lanes)
+traffic_data$Land.use        <- as.factor(traffic_data$Land.use)
+
+## Remove unnecessary variables 
+# remove Road variable
+traffic_data <- traffic_data[2:11]
+
+## Creating new index to track our data better
+# create new indexes for the finalized dataset
+rownames(traffic_data) <- 1:nrow(traffic_data)
+```
+
+
+## Check the data distributions and fix outliers
+
+```{r}
+
+str(traffic_data)
+
+# single unit
+ggplot(traffic_data, aes(x=Single.Unit.AADT)) + geom_histogram()
+ggplot(traffic_data, aes(x=Single.Unit...Peak)) + geom_histogram()
+
+## combo unit
+# Found an outlier with combo peak
+ggplot(traffic_data, aes(x=Combo.Unit.AADT)) + geom_histogram()
+ggplot(traffic_data, aes(x=Combo.Unit...Peak)) + geom_histogram()
+ggplot(traffic_data, aes(y=Combo.Unit...Peak)) + geom_boxplot()
+traffic_data$Combo.Unit...Peak[traffic_data$Combo.Unit...Peak > .17] <- mean(traffic_data$Combo.Unit...Peak)
+
+
+# D.Factor
+# The distribution has 2 outliers to the far right, but the rest of the data looks pretty normally distributed. 
+ggplot(traffic_data, aes(x=D.Factor)) + geom_histogram()
+table(traffic_data$D.Factor)
+
+# Replace D.Factor outliers with the mean value. 
+traffic_data$D.Factor[traffic_data$D.Factor == .75] <- mean(traffic_data$D.Factor)
+ggplot(traffic_data, aes(x=D.Factor)) + geom_histogram()
+
+
+## AADT histogram
+# No issues found
+ggplot(traffic_data, aes(x=AADT)) + geom_histogram()
+
+
+```
+
+
+
+
+## Data Parition
+
+```{r}
+
+# Remove unnecessary lines
+str(traffic_data)
+traffic_data$Future.AADT <- NULL
+
+# We will use the current year as the testing data set
+traffic_data.train <- subset(traffic_data, Year < 2023)
+traffic_data.test  <- subset(traffic_data, Year >= 2023)
+
+# Remove year since we already used it to subset into training and testing data sets
+traffic_data.train$Year <- NULL
+traffic_data.test$Year  <- NULL
+
+
+# Check to make sure the total length matches that of the original dataset
+nrow(traffic_data.train)
+nrow(traffic_data.test)
+
+#Final check before analysis
+str(traffic_data.train)
+```
+
+
+
+## Summary statistics
+
+
+```{r}
+library(tidyr)
+library(xtable)
+
+
+summary(traffic_data)
+
+Summary_Stats <- traffic_data %>% select(c(2:8))
+summary(Summary_Stats)
+
+
+
+```
+
+
+
+
+
+## Model the Data
+
+```{r}
+
+# Last check for our variables
+str(traffic_data.train)
+
+# Create the model
+traffic_lm <- lm(AADT ~.,traffic_data.train)
+summary(traffic_lm)
+
+# Jointly significant, but individually, not so much. 
+
+```
+
+
+
+## Check for multicolinearity
+
+```{r}
+
+vif(traffic_lm)
+ggcorrplot(cor(traffic_data.train[1:6]), type = "lower", lab = TRUE, method = "circle", title = "Correlation Matrix Heatmap")
+# It seems that AADT peak % and AADT peak count could be proxies for one another. We can try to remove the peak ones. 
+
+
+# Removed the 2 possibly offending variables
+traffic_lm2 <- lm(AADT ~ .-Single.Unit...Peak -Combo.Unit...Peak, traffic_data.train)
+summary(traffic_lm2)
+# This improved the adjusted R squared and the joint pvalue SLIGHTLY
+
+
+```
+
+## Checking for multicolinearity another way:  back,forward,stepwise regression 
+```{r}
+
+# Using the original traffic_lm model.
+
+# Forward selection
+ols_step_forward_p(traffic_lm, penter = .05) 
+# RMSE:1734.821, AdjRsqu: 0.958 
+
+# Backward selection
+ols_step_backward_p(traffic_lm, prem = .1)   
+# RMSE: 1734.821   , AdjRsqu:0.958  
+
+# step wise 
+ols_step_both_p(traffic_lm, penter = .05, prem =.1)
+# RMSE: 1797.905, AdjRsqu: 0.957
+
+
+# We will compare the forward and backward selection 
+
+
+```
+
+
+ 
+
+Forward Selection 
+```{r}
+
+traffic_lmForward <- lm(AADT ~ Single.Unit.AADT + Combo.Unit.AADT + Number.of.Lanes + Single.Unit...Peak,traffic_data.train)
+summary(traffic_lmForward)
+
+summary(traffic_lmForward)$adj.r.square
+```
+
+
+
+Backward Selection 
+```{r}
+
+traffic_lmBackward <- lm(AADT ~.-Land.use -D.Factor -Combo.Unit...Peak, traffic_data.train)
+summary(traffic_lmBackward)
+
+summary(traffic_lmBackward)$adj.r.square
+
+
+# Both backward and forward selection gave us the same model. We will be going with this model. 
+```
+
+
+
+## Check for multicolinearity again
+
+```{r}
+
+vif (traffic_lmBackward)
+# There are still some issues with multicolinearity, but these remaining variables are too important to remove. 
+
+```
+
+
+$$AADT =\beta_0 + \beta_1*Single.Unit.AADT + \beta_2*Combo.Unit.AADT + \beta_3*Single.Unit...Peak + \beta_4*Number.of.Lanes $$
+
+
+## Run against testing dataset
+
+```{r}
+
+library(forecast)
+
+predictions <- predict(traffic_lmBackward, newdata=traffic_data.test)
+
+
+# Calculate the baseline predictions (average prediction) dataset
+mean_AADT_train <- mean(traffic_data.train$AADT)
+baseline_predictions <- rep(mean_AADT_train,length(predictions))
+# This code is making a baseline with the mean of the ratings from the training dataset. Then we are replicating that mean by the length of our predictions, so that we have an equal length to what we are testing against. 
+
+
+
+# compute common accuracy measures for the model
+accuracy(predictions, traffic_data.test$AADT)
+
+
+#compute common accuracy measures for the baseline
+accuracy(baseline_predictions, traffic_data.test$AADT)
+
+
+# RMSE comparison: 7810.78 / 2265.55
+# We are nearly 3.5x more accurate than the baseline prediction method
+
+
+# Possible concerns to address in further studies: 
+# We may be missing some other key factors due to lack of expertise on this topic area. 
+# We may have over fit our training data set. 
+
+
+```
+
+
+For Final Report
+
+```{r}
+
+
+# compute common accuracy measures for the model
+accuracy_model <- data.frame(accuracy(predictions, traffic_data.test$AADT))
+
+#compute common accuracy measures for the baseline
+accuracy_baseline <- data.frame(accuracy(baseline_predictions, traffic_data.test$AADT))
+
+summary_model <- data.frame(summary(traffic_lmBackward)$coef)
+model_r <- data.frame(summary(traffic_lmBackward)$adj.r.square)
+initial_r <- data.frame(summary(traffic_lm)$adj.r.square)
+
+summary_model$Index <- row.names(summary_model)
+
+library(writexl)
+
+
+write_xlsx(x = list( 'accuracy_model' = accuracy_model, 
+                     'accuracy_baseline' = accuracy_baseline, 
+                     'summary_model' = summary_model, 
+                     'model_r'= model_r,
+                     'initial_r' = initial_r
+                     ), 'Traffic Report graphics2.xlsx', col_names = TRUE, format_headers = TRUE)
+
+
+```
+
+
+
+
